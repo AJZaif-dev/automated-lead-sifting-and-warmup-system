@@ -1,0 +1,665 @@
+{
+  "name": "Automated Lead-Sifting and Warmup System",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Iterate over input items \nfor (let item of $input.all()) {\n  let rawData = item.json;\n  \n  // Safely extract fields based on your exact n8n form output\n  // Using optional chaining (?.) to prevent crashes if 'Work' is missing\n  let emailRaw = rawData?.Work?.Email || rawData[\"Work Email\"] || rawData.email || \"\";\n  let email = emailRaw.toLowerCase().trim();\n  \n  let firstNameRaw = rawData[\"First Name\"] || rawData.firstName || \"\";\n  let lastNameRaw = rawData[\"Last Name\"] || rawData.lastName || \"\";\n  let jobTitleRaw = rawData[\"Job Title\"] || rawData.jobTitle || \"Unknown\";\n  \n  // 1. Clean and Normalize Name (Combine First and Last, capitalize correctly)\n  let fullName = `${firstNameRaw} ${lastNameRaw}`.trim();\n  let cleanName = fullName.split(' ')\n    .map(word => word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : \"\")\n    .join(' ');\n\n  // 2. Extract Company Domain\n  let domain = \"\";\n  if (email.includes(\"@\")) {\n    domain = email.split(\"@\")[1];\n  }\n\n  // 3. Sift out non-B2B emails (Generic providers)\n  const genericDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'];\n  let isB2B = domain ? !genericDomains.includes(domain) : false;\n  \n  // 4. Pre-assign a base confidence score to save LLM tokens on obvious mismatches\n  let baseScore = 0;\n  if (isB2B) baseScore += 5;\n  if (jobTitleRaw.toLowerCase().match(/(ceo|founder|director|manager|vp|head)/)) baseScore += 5;\n\n  // 5. Reconstruct the output payload for the AI Classifier\n  item.json = {\n    original_payload: rawData,\n    sifted_data: {\n      name: cleanName || \"empty\",\n      email: email || \"empty\",\n      company_domain: domain || \"empty\",\n      job_title: jobTitleRaw,\n      is_b2b_domain: isB2B,\n      pre_qualification_score: baseScore\n    },\n    // The exact prompt string for the Gemini node\n    ai_prompt: `Analyze this lead: Name: ${cleanName}, Title: ${jobTitleRaw}, Domain: ${domain}. Is this a high-value B2B target? Categorize as Tier 1, Tier 2, or Unqualified.`\n  };\n}\n\nreturn $input.all();\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        0
+      ],
+      "id": "1ad69f90-8d23-4aa6-9443-974dfde66aa4",
+      "name": "DataCleanup",
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -768,
+        112
+      ],
+      "id": "b608b058-fd53-433e-8af6-f682fd908a46",
+      "name": "Gemini",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "4tjaIcybl6l6Rgya",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze the following lead data and output the JSON classification:\n\nName: {{$json.sifted_data.name}}\nEmail: {{$json.sifted_data.email}}\nDomain: {{$json.sifted_data.company_domain}}\nTitle: {{$json.sifted_data.job_title}}\nIs B2B Domain: {{$json.sifted_data.is_b2b_domain}}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a ruthless B2B Lead Qualification Engine for a marketing agency. Your job is to analyze incoming lead data and strictly categorize them into one of three tiers based on their potential value.\n\nRules:\n1. \"HighValue\": The lead has a C-level, Founder, or Director title AND uses a professional company email domain (not gmail, yahoo, etc.).\n2. \"Standard\": The lead has a mid-level title (Manager, Specialist) AND uses a professional company email domain.\n3. \"Unqualified\": The lead uses a generic email domain (gmail, hotmail) OR has a low-level/irrelevant job title (freelancer, intern).\n\nYou must respond ONLY with a raw JSON object. Do not include markdown formatting, backticks, or any conversational text.\nRequired JSON structure:\n{\n  \"classification\": \"HighValue\" | \"Standard\" | \"Unqualified\",\n  \"reasoning\": \"A brief 1-sentence explanation of why.\"\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -768,
+        -256
+      ],
+      "id": "98ecbcd4-53bd-4b3b-8bed-017f580dc92c",
+      "name": "Classifier",
+      "retryOnFail": true,
+      "executeOnce": false,
+      "alwaysOutputData": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "HighValue",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "f917ca87-2060-4f8d-8d30-5268c8aad686"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HighValue"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "4911812e-3e09-4f00-9db3-664fed1c7928",
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "Standard",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Standard"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "fd6fa380-5c7c-484b-8ce4-17deef6319f4",
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "Unqualified",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Unqualified"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -192,
+        -208
+      ],
+      "id": "d2eee96e-2481-40d0-ac12-62938ddee81f",
+      "name": "Classification",
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "formTitle": "Leads",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "First Name",
+              "placeholder": "John",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Last Name",
+              "placeholder": "Cena",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Work Email",
+              "fieldType": "email",
+              "placeholder": "your_name@company.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Job Title",
+              "placeholder": "Manager",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Company Size",
+              "placeholder": "10",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "LinkedIn URL",
+              "placeholder": "https://www.linkedin.com/in/full-name-id/",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "ignoreBots": true
+        }
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -1216,
+        -96
+      ],
+      "id": "ea550067-763d-4003-b025-348283605030",
+      "name": "DataCollect",
+      "webhookId": "49c6e5d2-7dd9-4fa7-8073-2dfe4bd8e686",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms",
+          "mode": "list",
+          "cachedResultName": "Automated Lead-Sifting and Warmup System",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "HighValue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company_domain }}",
+            "Job Title": "={{ $json.job_title }}",
+            "Reasoning": "={{ $json.ai_reasoning }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reasoning",
+              "displayName": "Reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        32,
+        -464
+      ],
+      "id": "c79f37fe-66c9-41b1-8f80-d1609db26ef1",
+      "name": "HighValue",
+      "retryOnFail": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "u6cra7JOC61czyeM",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms",
+          "mode": "list",
+          "cachedResultName": "Automated Lead-Sifting and Warmup System",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1815315932,
+          "mode": "list",
+          "cachedResultName": "Standard",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit#gid=1815315932"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company_domain }}",
+            "Job Title": "={{ $json.job_title }}",
+            "Reasoning": "={{ $json.ai_reasoning }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reasoning",
+              "displayName": "Reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        32,
+        -272
+      ],
+      "id": "58191fe6-9a93-47cb-9d92-c98026c23bf4",
+      "name": "Standard",
+      "retryOnFail": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "u6cra7JOC61czyeM",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms",
+          "mode": "list",
+          "cachedResultName": "Automated Lead-Sifting and Warmup System",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1775738548,
+          "mode": "list",
+          "cachedResultName": "Unqualified",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1QXiJTqzZAMYMPOveQ_7Weah4XeSNohsNh4VgBgEA_ms/edit#gid=1775738548"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company_domain }}",
+            "Job Title": "={{ $json.job_title }}",
+            "Reasoning": "={{ $json.ai_reasoning }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reasoning",
+              "displayName": "Reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        32,
+        -80
+      ],
+      "id": "43210749-0e60-4174-b92b-4eae63746c13",
+      "name": "Unqualified",
+      "retryOnFail": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "u6cra7JOC61czyeM",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "path": "12d9435c-4491-4930-bcff-1e52f9a23215",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1216,
+        96
+      ],
+      "id": "9cd3b1f3-0282-4bc4-b695-79c9651b2196",
+      "name": "Webhook",
+      "webhookId": "12d9435c-4491-4930-bcff-1e52f9a23215",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\nconst currentItems = $input.all();\nconst cleanupItems = $('DataCleanup').all();\n\nfor (let i = 0; i < currentItems.length; i++) {\n  // 1. Defensively find the AI's output wherever n8n decided to hide it today\n  let rawAi = currentItems[i].json.output || currentItems[i].json.text || currentItems[i].json.response || currentItems[i].json;\n\n  let aiData = {};\n\n  // 2. Safely parse the AI data without crashing\n  try {\n    if (typeof rawAi === 'string') {\n      // AI models love to wrap JSON in markdown backticks, which breaks JSON.parse(). This strips them out.\n      let cleanedString = rawAi.replace(/```json/g, '').replace(/```/g, '').trim();\n      aiData = JSON.parse(cleanedString);\n    } else {\n      // If n8n already converted it to a Javascript object behind the scenes\n      aiData = rawAi;\n    }\n  } catch (error) {\n    // A safe fallback so your lead-gen workflow doesn't break if the AI hallucinates bad formatting\n    aiData = { classification: \"Error\", reasoning: \"AI output could not be parsed.\" };\n  }\n\n  // 3. Fetch the cleaned data safely from your previous node\n  let cleanData = cleanupItems[i] && cleanupItems[i].json.sifted_data ? cleanupItems[i].json.sifted_data : {};\n\n  // 4. Output the flat row for Google Sheets\n  results.push({\n    json: {\n      name: cleanData.name,\n      email: cleanData.email,\n      company_domain: cleanData.company_domain,\n      job_title: cleanData.job_title,\n      classification: aiData.classification,\n      ai_reasoning: aiData.reasoning\n    }\n  });\n}\n\nreturn results;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        -128
+      ],
+      "id": "cef00886-3a04-4d45-b3b3-c93b9c0fb07c",
+      "name": "DataMerging",
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "DataCleanup": {
+      "main": [
+        [
+          {
+            "node": "Classifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "DataMerging",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classifier",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier": {
+      "main": [
+        [
+          {
+            "node": "DataMerging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DataCollect": {
+      "main": [
+        [
+          {
+            "node": "DataCleanup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classification": {
+      "main": [
+        [
+          {
+            "node": "HighValue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Standard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unqualified",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "DataCleanup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HighValue": {
+      "main": [
+        [],
+        []
+      ]
+    },
+    "Standard": {
+      "main": [
+        [],
+        []
+      ]
+    },
+    "Unqualified": {
+      "main": [
+        [],
+        []
+      ]
+    },
+    "DataMerging": {
+      "main": [
+        [
+          {
+            "node": "Classification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Asia/Dhaka",
+    "saveDataSuccessExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "4d60c3a9-284a-45a5-be0f-93eac230c956",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a8c40d59464c37cd2053a040e4bf075f84ad03805d6400adb5e8c6da8cfdfcd6"
+  },
+  "nodeGroups": [],
+  "id": "lRNysYsNrPCcYptk",
+  "tags": []
+}
