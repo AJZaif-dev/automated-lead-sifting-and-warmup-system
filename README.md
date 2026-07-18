@@ -1,3 +1,5 @@
+<img width="1366" height="685" alt="ai lead sifting and warmup system" src="https://github.com/user-attachments/assets/50d3745b-aaab-4682-bc08-6fb9693cdf9a" />
+
 # AI Lead-Sifting & Segmentation Engine
 
 An automated data-cleaning, classification, and routing pipeline for inbound leads. This workflow ingests raw contacts from multiple sources (forms, webhooks, or cold email platforms), standardizes the payloads using JavaScript, runs an AI-driven triage using **Google Gemini** to score value intent, and splits the data into segmented Google Sheets for targeted bulk email campaigns and warmup sequences.
